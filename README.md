@@ -38,13 +38,42 @@ step, or install is required — it loads React and Tailwind from CDNs.
 Derived flags: `isMinor`, `specialNeedsFlag`, `businessSuccessionFlag`,
 `outOfStateFlag`, plus non-citizen-spouse and retirement-beneficiary review.
 
+## Email delivery (Netlify Function + Resend)
+
+On submit, after the full-form validation sweep passes, the client app POSTs the
+completed intake to a Netlify Function (`/.netlify/functions/submit-intake`),
+which emails the firm a plain-text summary with the structured responses
+attached as a JSON file, via [Resend](https://resend.com).
+
+The download-file path is always available as a fallback: if the network call
+fails, the client sees a clear message asking them to **Download my responses**
+and email the file so nothing is lost.
+
+### Deploy / configuration
+
+Deploy the repo to Netlify (functions live in `netlify/functions`, configured in
+`netlify.toml`; `package.json` installs the `resend` dependency at build time).
+
+Set these environment variables in **Netlify → Site settings → Environment
+variables** (never commit secrets):
+
+| Variable | Purpose |
+| --- | --- |
+| `RESEND_API_KEY` | Your Resend API key |
+| `INTAKE_TO_EMAIL` | Firm address that receives intakes |
+| `INTAKE_FROM_EMAIL` | Verified Resend sender (e.g. `intake@yourfirm.com`) |
+
+The function rejects non-POST requests (405), returns 400 if data is missing,
+200 `{ok:true}` on success, and 500 on error. It never logs the request body or
+any field values — only a generic error message — because this is privileged
+client intake.
+
 ## Submit, client view, and attorney view
 
-**Nothing is transmitted on submit** — this is a client-side app. After the
-client submits, they see a plain confirmation that their answers are *not* sent
-automatically, with a prominent **Download my responses** button (email the file
-to the firm) and a secondary **Print or save as PDF** action, plus a clean
-read-only list of their own answers.
+After the client submits, they see a confirmation (sent, or a download-and-email
+fallback if delivery failed) plus a clean read-only list of their own answers.
+The internal attorney flag list **travels only inside the email to the firm** and
+is never shown on the client confirmation screen.
 
 The internal **Flags for Attorney Review** box is **never shown to the client**.
 It renders only in the **attorney view**, which is opt-in via the URL hash:

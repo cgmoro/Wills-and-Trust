@@ -1,0 +1,7 @@
+{
+  "name": "estate-intake",
+  "private": true,
+  "dependencies": {
+    "resend": "^6.12.4"
+  }
+}

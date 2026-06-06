@@ -134,8 +134,86 @@ function buildAttorneyFlags(state, f) {
 }
 
 /* ============================================================
-   TOOLTIP / INFO ICON
+   PLAIN-TEXT SUMMARY (for the email body to the firm)
+   Uses the same field labels and visibility rules as the UI.
    ============================================================ */
+function buildSummaryText(sections, state, flags) {
+  const a = state.answers;
+  const lines = [];
+
+  for (const s of sections) {
+    if (s.gate || s.review) continue;
+    if (s.visibleWhen && !s.visibleWhen(a, flags, state)) continue;
+
+    const body = [];
+    for (const item of s.items) {
+      if (item.subhead) { body.push("  " + item.subhead + ":"); continue; }
+      if (item.note) continue;
+
+      if (item.repeater) {
+        if (!isItemVisible(item, a, flags, state)) continue;
+        if (item.repeater === "children" && state.children.length) {
+          body.push("  Children:");
+          state.children.forEach((c) => {
+            const age = ageFromDOB(c.F11b);
+            body.push("    - " + (c.F11a || "(no name)") + " (DOB " + (c.F11b || "?") +
+              ", age " + (age === null ? "?" : age) + (age !== null && age < 18 ? ", minor" : "") + "), " +
+              (c.F11c || "") + (c.F11d === "Yes" ? ", special needs" : ""));
+          });
+        }
+        if (item.repeater === "homeProperties" || item.repeater === "otherProperties") {
+          const list = state[item.repeater] || [];
+          if (list.length) {
+            body.push("  " + (item.repeater === "homeProperties" ? "Home / residence" : "Other real estate") + ":");
+            list.forEach((p) => body.push("    - " + (p.address || "(no address)") + " — " +
+              (p.title || "title unknown") + ", est. $" + (p.value || "?") + ", mortgage $" + (p.mortgage || "0")));
+          }
+        }
+        continue;
+      }
+
+      if (item.fiduciary) {
+        if (!isItemVisible(item, a, flags, state)) continue;
+        const fd = state.fiduciaries[item.fiduciary];
+        const fmt = (x) => x && x.fullName
+          ? x.fullName + (x.relationship ? " (" + x.relationship + ")" : "") +
+            (x.phone ? ", " + x.phone : "") + (x.city ? ", " + x.city : "")
+          : null;
+        const first = fd && fmt(fd.first);
+        const alt = fd && fmt(fd.alt);
+        if (first || alt) {
+          body.push("  " + item.label + ":");
+          if (first) body.push("    1st: " + first);
+          if (alt) body.push("    Alt: " + alt);
+        }
+        continue;
+      }
+
+      if (!isItemVisible(item, a, flags, state)) continue;
+      let v = a[item.id];
+      if (item.type === "multicheckbox") {
+        const opts = typeof item.options === "function" ? item.options(state, flags) : item.options;
+        const arr = Array.isArray(v) ? v : [];
+        v = arr.map((val) => (opts.find((o) => o.value === val) || {}).label || val).join(", ");
+      }
+      const empty = v === undefined || v === null ||
+        (typeof v === "string" && v.trim() === "") || (Array.isArray(v) && v.length === 0);
+      if (empty) continue;
+      body.push("  " + item.label + ": " + v);
+    }
+
+    if (body.length) {
+      lines.push("== " + s.title + " ==");
+      lines.push(...body);
+      lines.push("");
+    }
+  }
+
+  lines.push("Signed electronically by: " + (a.Z2 || "—"));
+  lines.push("Accuracy attested: " + (a.Z1 ? "Yes" : "No"));
+  return lines.join("\n");
+}
+
 function InfoIcon({ text }) {
   const [open, setOpen] = useState(false);
   if (!text) return null;
@@ -1055,6 +1133,8 @@ function App() {
   const [savedNote, setSavedNote] = useState(false);
   // Attorney view is opt-in via the #review URL hash. The client never sees it.
   const [attorneyMode, setAttorneyMode] = useState(() => window.location.hash === "#review");
+  // Email delivery status: idle | sending | sent | error
+  const [sendState, setSendState] = useState("idle");
   const fileInputRef = useRef(null);
   const topRef = useRef(null);
 
@@ -1118,11 +1198,47 @@ function App() {
     if (idx >= 0) { setStepIndex(idx); setSubmitted(false); scrollTop(); }
   };
 
-  const doSubmit = () => {
-    const errs = validateSection(section, state, flags);
-    if (Object.keys(errs).length > 0) { setErrors(errs); scrollTop(); return; }
+  // Full-form sweep: validate every visible section and return the first failure.
+  const runFullValidation = () => {
+    for (const s of visibleSections) {
+      const errs = validateSection(s, state, flags);
+      if (Object.keys(errs).length > 0) return { sectionId: s.id, errs };
+    }
+    return null;
+  };
+
+  const doSubmit = async () => {
+    if (sendState === "sending") return;
+    const fail = runFullValidation();
+    if (fail) {
+      const idx = visibleSections.findIndex((s) => s.id === fail.sectionId);
+      setErrors(fail.errs);
+      if (idx >= 0) setStepIndex(idx);
+      scrollTop();
+      return;
+    }
+    setErrors({});
     const stamped = { ...state, submittedAt: new Date().toISOString() };
     setState(stamped);
+    setSendState("sending");
+
+    try {
+      const res = await fetch("/.netlify/functions/submit-intake", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          clientName: stamped.answers.C1,
+          refCode: stamped.resumeCode,
+          summaryText: buildSummaryText(sections, stamped, flags),
+          flags: buildAttorneyFlags(stamped, flags),
+          fullState: stamped,
+        }),
+      });
+      setSendState(res.ok ? "sent" : "error");
+    } catch (e) {
+      setSendState("error");
+    }
+
     setSubmitted(true);
     scrollTop();
   };
@@ -1169,23 +1285,37 @@ function App() {
 
   /* ---- Render summary / confirmation view after submit ---- */
   if (submitted) {
+    const failed = sendState === "error";
     return (
       <div ref={topRef}>
-        <header className="bg-green-700 text-white p-4 no-print">
+        <header className={(failed ? "bg-amber-600" : "bg-green-700") + " text-white p-4 no-print"}>
           <div className="max-w-3xl mx-auto">
-            <p className="font-semibold text-lg">✓ You are almost done.</p>
-            <p className="mt-1 text-green-50">
-              Your answers are <strong>not sent automatically</strong>. Please click
-              <strong> Download my responses</strong> below and email the file to the firm, or use
-              <strong> Print</strong> to save a PDF and bring it to your appointment.
-            </p>
+            {failed ? (
+              <React.Fragment>
+                <p className="font-semibold text-lg">⚠ We could not send your responses automatically.</p>
+                <p className="mt-1 text-amber-50">
+                  Please click <strong>Download my responses</strong> and email the file to the firm so
+                  nothing is lost. You can also use <strong>Print</strong> to save a PDF and bring it to
+                  your appointment.
+                </p>
+              </React.Fragment>
+            ) : (
+              <React.Fragment>
+                <p className="font-semibold text-lg">✓ Your responses have been sent to the firm.</p>
+                <p className="mt-1 text-green-50">
+                  Thank you. The firm has received your intake. You may also keep your own copy with
+                  <strong> Download my responses</strong> or <strong>Print</strong>.
+                </p>
+              </React.Fragment>
+            )}
             <div className="flex flex-wrap gap-3 mt-4">
               <button onClick={downloadJSON}
-                className="px-5 py-2.5 rounded-lg bg-white text-green-800 font-semibold shadow hover:bg-green-50">
+                className="px-5 py-2.5 rounded-lg bg-white text-slate-800 font-semibold shadow hover:bg-slate-100">
                 Download my responses
               </button>
               <button onClick={() => window.print()}
-                className="px-4 py-2.5 rounded-lg bg-green-600 text-white font-medium hover:bg-green-500 border border-green-400">
+                className={"px-4 py-2.5 rounded-lg text-white font-medium border " +
+                  (failed ? "bg-amber-500 hover:bg-amber-400 border-amber-300" : "bg-green-600 hover:bg-green-500 border-green-400")}>
                 Print or save as PDF
               </button>
             </div>
@@ -1254,8 +1384,15 @@ function App() {
           )}
           {section.review && (
             <div className="flex items-center justify-between mt-8 pt-4 border-t border-slate-100">
-              <button onClick={goBack} className="px-5 py-2.5 rounded-lg bg-slate-200 text-slate-800 font-medium hover:bg-slate-300">← Back</button>
-              <button onClick={doSubmit} className="px-6 py-2.5 rounded-lg bg-green-600 text-white font-medium hover:bg-green-700">Submit questionnaire</button>
+              <button onClick={goBack} disabled={sendState === "sending"}
+                className="px-5 py-2.5 rounded-lg bg-slate-200 text-slate-800 font-medium hover:bg-slate-300 disabled:opacity-40">← Back</button>
+              <button onClick={doSubmit} disabled={sendState === "sending"}
+                className="px-6 py-2.5 rounded-lg bg-green-600 text-white font-medium hover:bg-green-700 disabled:opacity-60 disabled:cursor-not-allowed inline-flex items-center gap-2">
+                {sendState === "sending" && (
+                  <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" aria-hidden="true" />
+                )}
+                {sendState === "sending" ? "Sending…" : "Submit questionnaire"}
+              </button>
             </div>
           )}
         </div>
