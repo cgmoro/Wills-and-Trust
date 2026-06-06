@@ -38,29 +38,33 @@ step, or install is required — it loads React and Tailwind from CDNs.
 Derived flags: `isMinor`, `specialNeedsFlag`, `businessSuccessionFlag`,
 `outOfStateFlag`, plus non-citizen-spouse and retirement-beneficiary review.
 
-## Attorney summary
+## Submit, client view, and attorney view
 
-On submit, the app renders a printable summary grouped by section (hidden and
-empty optional fields are skipped), with the review-flags box at the top. Use
-**Print or save as PDF** (browser print dialog) or **Download JSON**.
+**Nothing is transmitted on submit** — this is a client-side app. After the
+client submits, they see a plain confirmation that their answers are *not* sent
+automatically, with a prominent **Download my responses** button (email the file
+to the firm) and a secondary **Print or save as PDF** action, plus a clean
+read-only list of their own answers.
 
-## ⚠️ Data-security note (read before going live)
+The internal **Flags for Attorney Review** box is **never shown to the client**.
+It renders only in the **attorney view**, which is opt-in via the URL hash:
+open the file (or a saved JSON re-imported into it) at
+`estate-planning-intake.html#review`. The attorney view shows the full summary
+grouped by section (hidden and empty optional fields are skipped) with the
+flags box at the top.
 
-This is a low-friction **first draft**. A purely client-side app that stores
-answers in the browser or a downloaded JSON file is **not a secure system of
-record** for sensitive data (SSNs, account references, financial values).
+## ⚠️ Data-security note
 
-The SSN field (P9) is intentionally **optional and collapsed**, with a privacy
-note, so it is easy to skip and provide later through a secure channel.
+This is a low-friction client-side app. Answers stored in the browser or a
+downloaded JSON file are **not a secure system of record** for sensitive data.
 
-Before production use, do one of:
-
-1. **Don't collect** SSNs / exact account numbers in intake; gather them later
-   over an encrypted channel.
-2. If you do collect sensitive fields, move storage to a **server with
-   encryption at rest, transport security, access controls, and a retention
-   policy**.
-3. Keep a short **privacy note** near any sensitive field.
+- The intake **does not collect Social Security numbers** at all. A note tells
+  the client the firm will request an SSN later through a secure channel if
+  needed.
+- Avoid collecting exact account numbers in intake; gather them later over an
+  encrypted channel.
+- If you later add sensitive fields, move storage to a **server with encryption
+  at rest, transport security, access controls, and a retention policy**.
 
 ## Accessibility
 

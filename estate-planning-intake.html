@@ -314,54 +314,6 @@ function Field({ item, value, onChange, error }) {
 }
 
 /* ============================================================
-   SENSITIVE (COLLAPSIBLE) FIELD WRAPPER — for SSN (P9)
-   ============================================================ */
-function SensitiveField({ item, value, onChange }) {
-  const [open, setOpen] = useState(!!value);
-  return (
-    <div className="mb-6 border border-amber-300 bg-amber-50 rounded-lg p-4">
-      <div className="flex items-start justify-between gap-2">
-        <div>
-          <p className="font-semibold text-slate-800">{item.label}<InfoIcon text={item.tooltip} /></p>
-          <p className="text-sm text-slate-600 mt-1">{item.help}</p>
-          <p className="text-xs text-amber-800 mt-2">
-            🔒 Privacy note: This form stores answers on your device. For your security, you can leave
-            this blank and provide it later through a secure, encrypted channel.
-          </p>
-        </div>
-      </div>
-      {!open ? (
-        <button
-          type="button"
-          onClick={() => setOpen(true)}
-          className="mt-3 text-sm font-medium text-blue-700 underline"
-        >
-          + Enter it anyway (optional)
-        </button>
-      ) : (
-        <div className="mt-3">
-          <input
-            id={item.id}
-            type="text"
-            value={value ?? ""}
-            onChange={(e) => onChange(item.id, e.target.value)}
-            className="w-full rounded-lg border border-slate-300 px-3 py-2"
-            placeholder="Leave blank to provide later"
-          />
-          <button
-            type="button"
-            onClick={() => { onChange(item.id, ""); setOpen(false); }}
-            className="mt-2 text-sm text-slate-500 underline"
-          >
-            Hide and clear
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ============================================================
    NAME / FIDUCIARY BLOCK
    ============================================================ */
 const NAME_FIELDS = [
@@ -450,9 +402,7 @@ function buildSections() {
         { id: "P6", type: "tel", required: true, label: "Phone" },
         { id: "P7", type: "email", required: true, label: "Email" },
         { id: "P8", type: "radio", required: true, label: "Preferred way to be contacted", options: ["Phone", "Email", "Text"] },
-        { id: "P9", type: "sensitive", label: "Social Security number",
-          help: "You may leave this blank here and provide it to us through a secure channel later.",
-          tooltip: "We do not need your SSN to begin. See the privacy note before entering it." },
+        { note: "We do not collect your Social Security number here. If we need it, we will request it later through a secure channel." },
       ],
     },
 
@@ -625,9 +575,9 @@ function buildSections() {
         { id: "W3", type: "radio", required: true, label: "If a child inherits while young, how would you like the money handled?",
           options: ["Hold in trust and release at certain ages", "Hold in trust until a single age", "Let the trustee decide based on need", "Not sure, please advise"],
           tooltip: "Many families release funds in stages, for example part at 25 and the rest at 30.",
-          visibleWhen: (a, f) => f.isMinor },
+          visibleWhen: (a, f) => f.hasChildren || f.isMinor },
         { id: "W4", type: "text", label: "What ages feel right to you?", help: "For example, 25 and 30.",
-          visibleWhen: (a, f) => f.isMinor && a.W3 === "Hold in trust and release at certain ages" },
+          visibleWhen: (a, f) => (f.hasChildren || f.isMinor) && a.W3 === "Hold in trust and release at certain ages" },
 
         { id: "W5", type: "radio", required: true, label: "Are there specific gifts you want to leave?", options: ["Yes", "No"],
           help: "A particular item, a dollar amount, or a gift to charity." },
@@ -912,7 +862,6 @@ function validateSection(section, state, flags) {
     }
     if (item.subhead || item.note) continue;
     if (!isItemVisible(item, a, flags, state)) continue;
-    if (item.type === "sensitive") continue; // optional
 
     const val = a[item.id];
     if (item.required) {
@@ -945,7 +894,7 @@ function labelFor(sections, id) {
   return id;
 }
 
-function AttorneySummary({ sections, state, flags, onBack }) {
+function AttorneySummary({ sections, state, flags, onBack, attorneyMode }) {
   const a = state.answers;
   const reviewFlags = buildAttorneyFlags(state, flags);
 
@@ -971,22 +920,24 @@ function AttorneySummary({ sections, state, flags, onBack }) {
       </div>
 
       <div className="print-area bg-white rounded-xl shadow p-6 sm:p-8">
-        <h1 className="text-2xl font-bold text-slate-900">Estate Planning Intake — Attorney Summary</h1>
+        <h1 className="text-2xl font-bold text-slate-900">{attorneyMode ? "Estate Planning Intake — Attorney Summary" : "Estate Planning Intake — Your Responses"}</h1>
         <p className="text-sm text-slate-500 mt-1">
           Client: {a.C1 || "—"} · Submitted: {state.submittedAt ? new Date(state.submittedAt).toLocaleString() : "—"} · Ref: {state.resumeCode}
         </p>
 
-        {/* FLAGS */}
-        <div className="mt-6 border-2 border-amber-400 bg-amber-50 rounded-lg p-4">
-          <h2 className="text-lg font-bold text-amber-900">⚑ Flags for Attorney Review</h2>
-          {reviewFlags.length === 0 ? (
-            <p className="text-amber-800 mt-1">No special flags raised.</p>
-          ) : (
-            <ul className="list-disc ml-6 mt-2 space-y-1 text-amber-900">
-              {reviewFlags.map((f, i) => <li key={i}>{f}</li>)}
-            </ul>
-          )}
-        </div>
+        {/* FLAGS — attorney view only; never shown to the client */}
+        {attorneyMode && (
+          <div className="mt-6 border-2 border-amber-400 bg-amber-50 rounded-lg p-4">
+            <h2 className="text-lg font-bold text-amber-900">⚑ Flags for Attorney Review</h2>
+            {reviewFlags.length === 0 ? (
+              <p className="text-amber-800 mt-1">No special flags raised.</p>
+            ) : (
+              <ul className="list-disc ml-6 mt-2 space-y-1 text-amber-900">
+                {reviewFlags.map((f, i) => <li key={i}>{f}</li>)}
+              </ul>
+            )}
+          </div>
+        )}
 
         {/* SECTIONS */}
         {sections.map((s) => {
@@ -1047,11 +998,6 @@ function AttorneySummary({ sections, state, flags, onBack }) {
               continue;
             }
 
-            if (item.type === "sensitive") {
-              if (a[item.id]) rows.push(<SummaryRow key={item.id} label={item.label} value="(provided — stored securely / on device)" />);
-              continue;
-            }
-
             if (!isItemVisible(item, a, flags, state)) continue;
             const v = renderValue(item);
             const isEmpty = v === undefined || v === null || (typeof v === "string" && v.trim() === "") || (Array.isArray(v) && v.length === 0);
@@ -1107,8 +1053,16 @@ function App() {
   const [errors, setErrors] = useState({});
   const [submitted, setSubmitted] = useState(() => !!state.submittedAt);
   const [savedNote, setSavedNote] = useState(false);
+  // Attorney view is opt-in via the #review URL hash. The client never sees it.
+  const [attorneyMode, setAttorneyMode] = useState(() => window.location.hash === "#review");
   const fileInputRef = useRef(null);
   const topRef = useRef(null);
+
+  useEffect(() => {
+    const onHash = () => setAttorneyMode(window.location.hash === "#review");
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
   const flags = useMemo(() => deriveFlags(state), [state]);
 
@@ -1132,15 +1086,17 @@ function App() {
     } catch (e) {}
   }, [state]);
 
-  // Auto pre-check guardian doc when minor children appear
+  // Auto pre-check guardian doc when minor children appear; remove it when minor status ends
   useEffect(() => {
-    if (flags.isMinor) {
-      setState((s) => {
-        const d = s.answers.D1 || [];
+    setState((s) => {
+      const d = s.answers.D1 || [];
+      if (flags.isMinor) {
         if (!d.includes("guardian")) return { ...s, answers: { ...s.answers, D1: [...d, "guardian"] } };
         return s;
-      });
-    }
+      }
+      if (d.includes("guardian")) return { ...s, answers: { ...s.answers, D1: d.filter((x) => x !== "guardian") } };
+      return s;
+    });
   }, [flags.isMinor]);
 
   const setAnswer = useCallback((id, val) => {
@@ -1211,17 +1167,31 @@ function App() {
     }
   };
 
-  /* ---- Render attorney summary view ---- */
+  /* ---- Render summary / confirmation view after submit ---- */
   if (submitted) {
     return (
       <div ref={topRef}>
         <header className="bg-green-700 text-white p-4 no-print">
-          <div className="max-w-3xl mx-auto flex flex-wrap items-center justify-between gap-3">
-            <p className="font-medium">✓ Thank you — your questionnaire has been completed. The firm will be in touch.</p>
-            <button onClick={downloadJSON} className="px-3 py-1.5 rounded bg-white/20 hover:bg-white/30 text-sm">Download JSON</button>
+          <div className="max-w-3xl mx-auto">
+            <p className="font-semibold text-lg">✓ You are almost done.</p>
+            <p className="mt-1 text-green-50">
+              Your answers are <strong>not sent automatically</strong>. Please click
+              <strong> Download my responses</strong> below and email the file to the firm, or use
+              <strong> Print</strong> to save a PDF and bring it to your appointment.
+            </p>
+            <div className="flex flex-wrap gap-3 mt-4">
+              <button onClick={downloadJSON}
+                className="px-5 py-2.5 rounded-lg bg-white text-green-800 font-semibold shadow hover:bg-green-50">
+                Download my responses
+              </button>
+              <button onClick={() => window.print()}
+                className="px-4 py-2.5 rounded-lg bg-green-600 text-white font-medium hover:bg-green-500 border border-green-400">
+                Print or save as PDF
+              </button>
+            </div>
           </div>
         </header>
-        <AttorneySummary sections={sections} state={state} flags={flags} onBack={() => setSubmitted(false)} />
+        <AttorneySummary sections={sections} state={state} flags={flags} attorneyMode={attorneyMode} onBack={() => setSubmitted(false)} />
       </div>
     );
   }
@@ -1383,9 +1353,6 @@ function SectionView({ section, state, flags, errors, sections, setAnswer, setSt
             error={errors[item.fiduciary]} />;
         }
         if (!isItemVisible(item, a, flags, state)) return null;
-        if (item.type === "sensitive") {
-          return <SensitiveField key={item.id} item={item} value={a[item.id]} onChange={setAnswer} />;
-        }
         // Provide resolved options for function-based options
         const resolvedItem = typeof item.options === "function"
           ? { ...item, options: () => item.options(state, flags) }
