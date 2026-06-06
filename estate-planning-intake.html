@@ -1,0 +1,1437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Estate Planning Intake Questionnaire</title>
+  <meta name="description" content="A plain-language estate planning intake questionnaire for California clients. Save and resume supported." />
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* Print styles for the attorney-facing summary */
+    @media print {
+      .no-print { display: none !important; }
+      body { background: #fff !important; }
+      .print-area { box-shadow: none !important; border: none !important; }
+    }
+    /* Gentle focus ring for keyboard users */
+    :focus-visible { outline: 3px solid #1d4ed8; outline-offset: 2px; }
+    html { scroll-behavior: smooth; }
+  </style>
+</head>
+<body class="bg-slate-100 text-slate-900">
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef, useCallback } = React;
+
+/* ============================================================
+   STORAGE KEYS + HELPERS
+   ============================================================ */
+const STORAGE_KEY = "epq_current_v1";
+const CODE_PREFIX = "epq_session_";
+
+function genResumeCode() {
+  // Human-friendly short code, e.g. "EP-4F7K"
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let s = "";
+  for (let i = 0; i < 4; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return "EP-" + s;
+}
+
+function ageFromDOB(dob) {
+  if (!dob) return null;
+  const d = new Date(dob);
+  if (isNaN(d.getTime())) return null;
+  const now = new Date();
+  let age = now.getFullYear() - d.getFullYear();
+  const m = now.getMonth() - d.getMonth();
+  if (m < 0 || (m === 0 && now.getDate() < d.getDate())) age--;
+  return age;
+}
+
+function emailValid(v) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v || "").trim());
+}
+function phoneValid(v) {
+  const digits = String(v || "").replace(/\D/g, "");
+  return digits.length >= 10;
+}
+
+/* ============================================================
+   DEFAULT STATE
+   ============================================================ */
+function makeDefaultState() {
+  return {
+    answers: {
+      // Section 4 documents pre-checked recommended set (guardian added dynamically)
+      D1: ["trust", "pourover", "dpoa", "ahcd", "hipaa"],
+    },
+    children: [],
+    homeProperties: [],
+    otherProperties: [],
+    fiduciaries: {}, // { R1: {first:{}, alt:{}}, ... }
+    resumeCode: genResumeCode(),
+    submittedAt: null,
+  };
+}
+
+/* ============================================================
+   DERIVED FLAGS
+   ============================================================ */
+function deriveFlags(state) {
+  const a = state.answers;
+  const isMinor = (state.children || []).some((c) => {
+    const age = ageFromDOB(c.F11b);
+    return age !== null && age < 18;
+  });
+  const specialNeedsFlag = (state.children || []).some((c) => c.F11d === "Yes");
+  const businessSuccessionFlag = a.A3 === "Yes" && (a.B6 === "Yes" || a.B6 === "Let's discuss");
+  const outOfStateFlag = a.A2 === "Yes" || a.S2 === "Yes";
+  const docs = a.D1 || [];
+  const hasTrust = docs.includes("trust");
+  const hasDPOA = docs.includes("dpoa");
+  const hasAHCD = docs.includes("ahcd");
+  const married = a.F1 === "Married" || a.F1 === "Registered domestic partner";
+  const hasChildren = a.F10 === "Yes";
+  const retirementReview = a.A6 === "Yes";
+  const nonCitizenSpouse = married && a.F4 === "No";
+  const disinheritFlag = a.W9 === "Yes" || a.W9 === "Let's discuss";
+  return {
+    isMinor, specialNeedsFlag, businessSuccessionFlag, outOfStateFlag,
+    hasTrust, hasDPOA, hasAHCD, married, hasChildren, retirementReview,
+    nonCitizenSpouse, disinheritFlag,
+  };
+}
+
+/* ============================================================
+   FLAGS FOR ATTORNEY REVIEW (plain language)
+   ============================================================ */
+function buildAttorneyFlags(state, f) {
+  const a = state.answers;
+  const out = [];
+  if (f.businessSuccessionFlag) out.push("Business succession follow-up requested.");
+  if (f.isMinor) out.push("Minor children present — guardian nomination needed.");
+  if (f.specialNeedsFlag) out.push("Special needs beneficiary — consider a special needs trust (SNT).");
+  if (f.outOfStateFlag) out.push("Out-of-state or out-of-country property — ancillary planning may apply.");
+  if (f.disinheritFlag) out.push("Intentional disinheritance noted — handle carefully.");
+  if (f.nonCitizenSpouse) out.push("Non-citizen spouse — review QDOT / trust options.");
+  if (f.retirementReview) out.push("Retirement accounts present — review beneficiary designations.");
+  if (a.F6 === "Yes" || a.F6 === "Not sure") out.push("Prenuptial / postnuptial agreement indicated — request copy.");
+  if (a.F7 === "Yes") out.push("Prior marriage(s) — confirm blended-family intentions.");
+  if (a.F9 === "Yes" || a.F9 === "Not sure") out.push("Possible separate property — confirm characterization.");
+  if (a.D2 === "Yes" || a.D2 === "Not sure") out.push("Prior estate documents may exist — revoke or update.");
+  if (a.S1 === "Yes") out.push("Expecting significant inheritance or gift.");
+  if (a.S3 === "Yes" || a.S3 === "Prefer to discuss live") out.push("Family tension flagged.");
+  if (a.S4 === "Yes") out.push("Firearms requiring special handling — consider gun trust.");
+  if (a.S5 === "Yes") out.push("Other unusual circumstance noted — see Section 9.");
+  if (a.R6 && String(a.R6).trim()) out.push("Client named someone NOT to serve — see fiduciary notes.");
+  if (a.W6 === "Yes") out.push("Charitable gift intended.");
+  if (a.B5 === "Yes" || a.B5 === "Not sure") out.push("Business governing documents to review (operating/partnership/buy-sell).");
+  return out;
+}
+
+/* ============================================================
+   TOOLTIP / INFO ICON
+   ============================================================ */
+function InfoIcon({ text }) {
+  const [open, setOpen] = useState(false);
+  if (!text) return null;
+  return (
+    <span className="relative inline-block align-middle ml-1">
+      <button
+        type="button"
+        aria-label="More information"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-slate-300 text-slate-700 text-xs font-bold hover:bg-slate-400 focus:outline-none"
+      >
+        i
+      </button>
+      {open && (
+        <span
+          role="tooltip"
+          className="absolute z-20 left-1/2 -translate-x-1/2 mt-2 w-64 p-3 text-sm font-normal text-white bg-slate-800 rounded-lg shadow-lg"
+        >
+          {text}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/* ============================================================
+   FIELD LABEL
+   ============================================================ */
+function FieldLabel({ id, label, required, tooltip }) {
+  return (
+    <label htmlFor={id} className="block font-semibold text-slate-800 mb-1">
+      {label}
+      {required && <span className="text-red-600 ml-1" aria-hidden="true">*</span>}
+      <InfoIcon text={tooltip} />
+    </label>
+  );
+}
+
+/* ============================================================
+   GENERIC FIELD RENDERER
+   ============================================================ */
+function Field({ item, value, onChange, error }) {
+  const { id, type, label, help, tooltip, required } = item;
+  const opts = typeof item.options === "function" ? item.options() : item.options;
+
+  const baseInput =
+    "w-full rounded-lg border px-3 py-2 text-base focus:ring-2 focus:ring-blue-500 " +
+    (error ? "border-red-500 bg-red-50" : "border-slate-300");
+
+  const wrap = (children) => (
+    <div className="mb-6">
+      <FieldLabel id={id} label={label} required={required} tooltip={tooltip} />
+      {children}
+      {help && <p className="text-sm text-slate-500 mt-1">{help}</p>}
+      {error && <p className="text-sm text-red-600 mt-1 font-medium">{error}</p>}
+    </div>
+  );
+
+  switch (type) {
+    case "text":
+    case "tel":
+    case "email":
+    case "date":
+    case "number":
+      return wrap(
+        <input
+          id={id}
+          type={type === "number" ? "number" : type}
+          inputMode={type === "number" ? "decimal" : undefined}
+          value={value ?? ""}
+          onChange={(e) => onChange(id, e.target.value)}
+          className={baseInput}
+        />
+      );
+
+    case "textarea":
+      return wrap(
+        <textarea
+          id={id}
+          rows={4}
+          value={value ?? ""}
+          onChange={(e) => onChange(id, e.target.value)}
+          className={baseInput}
+        />
+      );
+
+    case "select":
+      return wrap(
+        <select
+          id={id}
+          value={value ?? ""}
+          onChange={(e) => onChange(id, e.target.value)}
+          className={baseInput}
+        >
+          <option value="">-- Please choose --</option>
+          {opts.map((o) => (
+            <option key={o} value={o}>{o}</option>
+          ))}
+        </select>
+      );
+
+    case "radio":
+      return wrap(
+        <div className="space-y-2" role="radiogroup" aria-label={label}>
+          {opts.map((o) => (
+            <label key={o} className="flex items-start gap-2 cursor-pointer p-2 rounded-lg hover:bg-slate-50">
+              <input
+                type="radio"
+                name={id}
+                value={o}
+                checked={value === o}
+                onChange={() => onChange(id, o)}
+                className="mt-1 w-4 h-4"
+              />
+              <span className="text-slate-800">{o}</span>
+            </label>
+          ))}
+        </div>
+      );
+
+    case "checkbox":
+      return (
+        <div className="mb-6">
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={!!value}
+              onChange={(e) => onChange(id, e.target.checked)}
+              className="mt-1 w-5 h-5"
+            />
+            <span className="font-semibold text-slate-800">
+              {label}
+              {required && <span className="text-red-600 ml-1">*</span>}
+              <InfoIcon text={tooltip} />
+            </span>
+          </label>
+          {help && <p className="text-sm text-slate-500 mt-1 ml-8">{help}</p>}
+          {error && <p className="text-sm text-red-600 mt-1 ml-8 font-medium">{error}</p>}
+        </div>
+      );
+
+    case "multicheckbox": {
+      const arr = Array.isArray(value) ? value : [];
+      const toggle = (val) => {
+        const next = arr.includes(val) ? arr.filter((x) => x !== val) : [...arr, val];
+        onChange(id, next);
+      };
+      return wrap(
+        <div className="space-y-2">
+          {opts.map((o) => (
+            <label key={o.value} className="flex items-start gap-3 cursor-pointer p-3 rounded-lg border border-slate-200 hover:bg-slate-50">
+              <input
+                type="checkbox"
+                checked={arr.includes(o.value)}
+                onChange={() => toggle(o.value)}
+                className="mt-1 w-5 h-5"
+              />
+              <span>
+                <span className="font-medium text-slate-800">{o.label}</span>
+                {o.help && <span className="block text-sm text-slate-500">{o.help}</span>}
+              </span>
+            </label>
+          ))}
+        </div>
+      );
+    }
+
+    default:
+      return wrap(<div className="text-red-600">Unknown field type: {type}</div>);
+  }
+}
+
+/* ============================================================
+   SENSITIVE (COLLAPSIBLE) FIELD WRAPPER — for SSN (P9)
+   ============================================================ */
+function SensitiveField({ item, value, onChange }) {
+  const [open, setOpen] = useState(!!value);
+  return (
+    <div className="mb-6 border border-amber-300 bg-amber-50 rounded-lg p-4">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className="font-semibold text-slate-800">{item.label}<InfoIcon text={item.tooltip} /></p>
+          <p className="text-sm text-slate-600 mt-1">{item.help}</p>
+          <p className="text-xs text-amber-800 mt-2">
+            🔒 Privacy note: This form stores answers on your device. For your security, you can leave
+            this blank and provide it later through a secure, encrypted channel.
+          </p>
+        </div>
+      </div>
+      {!open ? (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="mt-3 text-sm font-medium text-blue-700 underline"
+        >
+          + Enter it anyway (optional)
+        </button>
+      ) : (
+        <div className="mt-3">
+          <input
+            id={item.id}
+            type="text"
+            value={value ?? ""}
+            onChange={(e) => onChange(item.id, e.target.value)}
+            className="w-full rounded-lg border border-slate-300 px-3 py-2"
+            placeholder="Leave blank to provide later"
+          />
+          <button
+            type="button"
+            onClick={() => { onChange(item.id, ""); setOpen(false); }}
+            className="mt-2 text-sm text-slate-500 underline"
+          >
+            Hide and clear
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   NAME / FIDUCIARY BLOCK
+   ============================================================ */
+const NAME_FIELDS = [
+  { key: "fullName", label: "Full name", type: "text" },
+  { key: "relationship", label: "Relationship to you", type: "text" },
+  { key: "phone", label: "Phone", type: "tel" },
+  { key: "city", label: "City", type: "text" },
+];
+
+function PersonBlock({ title, data, onChange }) {
+  const d = data || {};
+  return (
+    <div className="rounded-lg border border-slate-200 p-4 bg-slate-50">
+      <p className="font-medium text-slate-700 mb-3">{title}</p>
+      <div className="grid sm:grid-cols-2 gap-3">
+        {NAME_FIELDS.map((nf) => (
+          <div key={nf.key}>
+            <label className="block text-sm text-slate-600 mb-1">{nf.label}</label>
+            <input
+              type={nf.type}
+              value={d[nf.key] ?? ""}
+              onChange={(e) => onChange({ ...d, [nf.key]: e.target.value })}
+              className="w-full rounded-lg border border-slate-300 px-3 py-2"
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   QUESTION SCHEMA  (sections + items)
+   visibleWhen(a, f, state) controls conditional display.
+   ============================================================ */
+function buildSections() {
+  return [
+    /* ---------- SECTION 0: WELCOME / DISCLAIMERS ---------- */
+    {
+      id: "S0",
+      title: "Welcome",
+      gate: true,
+      items: [
+        { id: "Z0", type: "checkbox", required: true,
+          label: "I have read and understand the notices above.",
+          help: "You must check this box to continue.",
+          tooltip: "This protects both you and the firm. It confirms you understand that filling out this form is the first step, not a final agreement." },
+      ],
+    },
+
+    /* ---------- SECTION 1: CONFLICT CHECK ---------- */
+    {
+      id: "S1",
+      title: "Conflict Check",
+      intro: "We collect this up front so we can clear conflicts before reviewing your matter.",
+      items: [
+        { id: "C1", type: "text", required: true, label: "Your full legal name",
+          help: "First, middle, last, and any suffix.", tooltip: "Use the name as it appears on your government ID." },
+        { id: "C2", type: "text", label: "Other names you have used",
+          help: "Maiden name, former married names, nicknames, or aliases.", tooltip: "This helps us run a complete conflict check." },
+        { id: "C3", type: "radio", required: true, label: "Have you or your spouse ever worked with this firm before?",
+          options: ["Yes", "No", "Not sure"] },
+        { id: "C4", type: "text", label: "Briefly describe the prior matter", help: "A short description is fine.",
+          visibleWhen: (a) => a.C3 === "Yes" },
+        { id: "C5", type: "textarea", label: "Are there any people or businesses on the other side of any current dispute you are involved in?",
+          help: "List names if any. This helps us confirm we have no conflict of interest.",
+          tooltip: "A conflict means the firm already represents, or has a duty to, someone whose interests are adverse to yours." },
+      ],
+    },
+
+    /* ---------- SECTION 2: ABOUT YOU ---------- */
+    {
+      id: "S2",
+      title: "About You",
+      items: [
+        { id: "P1", type: "date", required: true, label: "Date of birth",
+          tooltip: "Used to confirm capacity to sign and for age-based planning." },
+        { id: "P2", type: "radio", required: true, label: "Are you a U.S. citizen?", options: ["Yes", "No"] },
+        { id: "P3", type: "text", label: "Country of citizenship and immigration status",
+          help: "For example, lawful permanent resident.",
+          tooltip: "Citizenship can affect certain tax and trust options. We will discuss this with you.",
+          visibleWhen: (a) => a.P2 === "No" },
+        { id: "P4", type: "text", required: true, label: "Home street address", help: "Where you currently live." },
+        { id: "P5", type: "text", required: true, label: "County of residence", help: "The California county where you live.",
+          tooltip: "This determines which court would handle your estate if needed." },
+        { id: "P6", type: "tel", required: true, label: "Phone" },
+        { id: "P7", type: "email", required: true, label: "Email" },
+        { id: "P8", type: "radio", required: true, label: "Preferred way to be contacted", options: ["Phone", "Email", "Text"] },
+        { id: "P9", type: "sensitive", label: "Social Security number",
+          help: "You may leave this blank here and provide it to us through a secure channel later.",
+          tooltip: "We do not need your SSN to begin. See the privacy note before entering it." },
+      ],
+    },
+
+    /* ---------- SECTION 3: FAMILY ---------- */
+    {
+      id: "S3",
+      title: "Family",
+      items: [
+        { id: "F1", type: "select", required: true, label: "Your marital status",
+          options: ["Single", "Married", "Registered domestic partner", "Divorced", "Widowed"],
+          tooltip: "California treats registered domestic partners much like spouses for estate purposes." },
+
+        { id: "F2", type: "text", required: true, label: "Spouse or partner full legal name", visibleWhen: (a, f) => f.married },
+        { id: "F3", type: "date", required: true, label: "Spouse or partner date of birth", visibleWhen: (a, f) => f.married },
+        { id: "F4", type: "radio", required: true, label: "Is your spouse or partner a U.S. citizen?", options: ["Yes", "No"],
+          tooltip: "If your spouse is not a U.S. citizen, special trust planning may apply. We will flag this for review.",
+          visibleWhen: (a, f) => f.married },
+        { id: "F5", type: "text", required: true, label: "Date and place of marriage or registration", visibleWhen: (a, f) => f.married },
+        { id: "F6", type: "radio", required: true, label: "Do you have a prenuptial or postnuptial agreement?",
+          options: ["Yes", "No", "Not sure"], visibleWhen: (a, f) => f.married },
+        { id: "F7", type: "radio", required: true, label: "Have either of you been married before?", options: ["Yes", "No"],
+          visibleWhen: (a, f) => f.married },
+        { id: "F8", type: "radio", required: true, label: "Do you and your spouse want one shared plan, or separate plans?",
+          options: ["Shared plan", "Separate plans", "Not sure"],
+          tooltip: "Many married couples use a joint trust, but separate planning can make sense, especially in blended families. We will advise you.",
+          visibleWhen: (a, f) => f.married },
+        { id: "F9", type: "radio", required: true, label: "Do you own any property that you consider entirely your own, separate from your spouse?",
+          options: ["Yes", "No", "Not sure"],
+          help: "For example, something you owned before marriage, or an inheritance or gift to you alone.",
+          tooltip: "California is a community property state. Property acquired during marriage is usually shared. Separate property follows different rules, so it helps us to know.",
+          visibleWhen: (a, f) => f.married },
+
+        { id: "F10", type: "radio", required: true, label: "Do you have children?", options: ["Yes", "No"] },
+        { repeater: "children", visibleWhen: (a) => a.F10 === "Yes" },
+
+        { id: "F12", type: "radio", required: true, label: "Are you responsible for any other dependents?",
+          options: ["Yes", "No"], help: "For example, an aging parent or another relative." },
+        { id: "F13", type: "textarea", label: "Tell us about them",
+          help: "Name, relationship, and the kind of support you provide.", visibleWhen: (a) => a.F12 === "Yes" },
+      ],
+    },
+
+    /* ---------- SECTION 4: DOCUMENTS YOU WANT ---------- */
+    {
+      id: "S4",
+      title: "Documents You Want",
+      intro: "We have pre-checked a recommended set. You can opt out, and your attorney will confirm scope later.",
+      items: [
+        { id: "D1", type: "multicheckbox", required: true, label: "Which documents are we preparing for you?",
+          options: (state, f) => {
+            const base = [
+              { value: "trust", label: "Revocable living trust", help: "Holds your assets and lets your loved ones avoid the court process called probate." },
+              { value: "pourover", label: "Pour-over will", help: "A short will that works with your trust. It catches anything not already in the trust." },
+              { value: "will", label: "Will (standalone)", help: "Names who receives your property and who manages your estate. Use this if you are not creating a trust." },
+              { value: "dpoa", label: "Durable power of attorney for finances", help: "Names someone to handle money matters if you cannot." },
+              { value: "ahcd", label: "Advance health care directive", help: "Names someone to make medical decisions for you and records your wishes." },
+              { value: "hipaa", label: "HIPAA authorization", help: "Lets named people receive your medical information." },
+            ];
+            if (f && f.isMinor) base.push({ value: "guardian", label: "Guardian nomination for minor children", help: "Names who would raise your children if you could not." });
+            return base;
+          } },
+        { id: "D2", type: "radio", required: true, label: "Have you signed any estate planning documents before, anywhere?",
+          options: ["Yes", "No", "Not sure"], help: "For example, a will or trust made in another state or years ago.",
+          tooltip: "Older documents may need to be revoked or updated. Please bring copies if you have them." },
+      ],
+    },
+
+    /* ---------- SECTION 5: ASSETS & LIABILITIES ---------- */
+    {
+      id: "S5",
+      title: "Assets and Liabilities",
+      intro: "Rough estimates are fine. We are getting a picture, not an exact audit.",
+      items: [
+        { subhead: "Real property" },
+        { id: "A1", type: "radio", required: true, label: "Do you own your home?", options: ["Yes", "No"] },
+        { repeater: "homeProperties", visibleWhen: (a) => a.A1 === "Yes" },
+        { id: "A2", type: "radio", required: true, label: "Do you own any other real estate?", options: ["Yes", "No"],
+          help: "Rental, vacation, land, or out-of-state property." },
+        { repeater: "otherProperties", visibleWhen: (a) => a.A2 === "Yes" },
+
+        { subhead: "Business" },
+        { id: "A3", type: "radio", required: true, label: "Do you own all or part of a business?", options: ["Yes", "No"] },
+        { id: "B1", type: "text", label: "Business name", visibleWhen: (a) => a.A3 === "Yes" },
+        { id: "B2", type: "select", label: "Type of business",
+          options: ["Sole proprietorship", "LLC", "S corporation", "C corporation", "Partnership", "Not sure"],
+          tooltip: "If you are not sure, that is fine. We can confirm from your records.", visibleWhen: (a) => a.A3 === "Yes" },
+        { id: "B3", type: "number", label: "Roughly what percentage do you own?", help: "If you are the only owner, enter 100.",
+          visibleWhen: (a) => a.A3 === "Yes" },
+        { id: "B4", type: "radio", label: "Are there other owners or partners?", options: ["Yes", "No"],
+          visibleWhen: (a) => a.A3 === "Yes" },
+        { id: "B5", type: "radio", label: "Is there a written operating agreement, partnership agreement, or buy-sell agreement?",
+          options: ["Yes", "No", "Not sure"], tooltip: "These documents can control what happens to your share. We will want to review them.",
+          visibleWhen: (a) => a.A3 === "Yes" },
+        { id: "B6", type: "radio", label: "Would you like us to plan for what happens to the business if something happens to you?",
+          options: ["Yes", "No", "Let's discuss"], visibleWhen: (a) => a.A3 === "Yes" },
+
+        { subhead: "Financial accounts and retirement" },
+        { id: "A4", type: "radio", required: true, label: "Do you have bank or credit union accounts?", options: ["Yes", "No"] },
+        { id: "A5", type: "radio", required: true, label: "Do you have investment or brokerage accounts?", options: ["Yes", "No"] },
+        { id: "A6", type: "radio", required: true, label: "Do you have retirement accounts?", options: ["Yes", "No"],
+          help: "401k, IRA, pension, or similar." },
+        { id: "A6a", type: "textarea", label: "List them briefly",
+          help: "Type of account and roughly the value. If a 401k is still being set up, note that.",
+          tooltip: "Retirement accounts usually pass by beneficiary designation, not by your will or trust. We will help you coordinate these.",
+          visibleWhen: (a) => a.A6 === "Yes" },
+
+        { subhead: "Insurance and other property" },
+        { id: "A7", type: "radio", required: true, label: "Do you have life insurance?", options: ["Yes", "No"] },
+        { id: "A7a", type: "textarea", label: "Insurer and approximate death benefit", visibleWhen: (a) => a.A7 === "Yes" },
+        { id: "A8", type: "radio", required: true, label: "Any vehicles, boats, or other titled property of significant value?", options: ["Yes", "No"] },
+        { id: "A9", type: "radio", required: true, label: "Any valuable personal property?", options: ["Yes", "No"],
+          help: "Jewelry, art, collectibles, or family heirlooms." },
+        { id: "A10", type: "radio", required: true, label: "Do you have digital assets you want addressed?", options: ["Yes", "No"],
+          help: "Online accounts, cryptocurrency, domain names, or photos stored online.",
+          tooltip: "We can give someone authority to access these." },
+
+        { subhead: "Liabilities" },
+        { id: "A11", type: "radio", required: true, label: "Other than mortgages, do you have significant debts?", options: ["Yes", "No"],
+          help: "Loans, lines of credit, or money you owe." },
+        { id: "A11a", type: "textarea", label: "Briefly describe", visibleWhen: (a) => a.A11 === "Yes" },
+      ],
+    },
+
+    /* ---------- SECTION 6: FIDUCIARIES ---------- */
+    {
+      id: "S6",
+      title: "People You Trust",
+      intro: "These are the people who would act for you. Name a first choice and a backup for each role. It is fine to name the same person for more than one role.",
+      items: [
+        { fiduciary: "R1", required: () => true, label: "Executor or personal representative",
+          help: "The person who carries out your will and settles your estate.",
+          tooltip: "Choose someone organized and trustworthy. They do not need to be a lawyer." },
+        { fiduciary: "R2", required: (a, f) => f.hasTrust, label: "Successor trustee",
+          help: "The person who manages your trust if you cannot.", tooltip: "Often the same person as your executor.",
+          visibleWhen: (a, f) => f.hasTrust },
+        { fiduciary: "R3", required: (a, f) => f.hasDPOA, label: "Financial agent (power of attorney)",
+          help: "The person who handles money matters if you cannot.", visibleWhen: (a, f) => f.hasDPOA },
+        { fiduciary: "R4", required: (a, f) => f.hasAHCD, label: "Health care agent",
+          help: "The person who makes medical decisions if you cannot speak for yourself.",
+          tooltip: "Pick someone who will honor your wishes, even under pressure.", visibleWhen: (a, f) => f.hasAHCD },
+        { fiduciary: "R5", required: (a, f) => f.isMinor, label: "Guardian for your minor children",
+          help: "The person who would raise your children if you and the other parent could not.",
+          tooltip: "This is one of the most important choices for parents. Name a backup too.",
+          visibleWhen: (a, f) => f.isMinor },
+        { id: "R6", type: "textarea",
+          label: "Is there anyone you do NOT want to serve in any of these roles, or to make decisions for your children?",
+          help: "It is okay to say so. This stays confidential." },
+      ],
+    },
+
+    /* ---------- SECTION 7: DISTRIBUTION WISHES ---------- */
+    {
+      id: "S7",
+      title: "Who Receives What",
+      items: [
+        { id: "W1", type: "radio", required: true, label: "In simple terms, what is your main wish?",
+          options: (state, f) => {
+            const list = [];
+            if (f && f.married) list.push("Everything to my spouse, then to my children");
+            list.push("Everything to my children equally");
+            list.push("Divide among specific people");
+            list.push("I have a more detailed plan in mind");
+            return list;
+          },
+          tooltip: "This is a starting point. We will refine the details with you." },
+        { id: "W2", type: "textarea", label: "Describe how you would like things divided",
+          help: "Names and rough shares are enough.",
+          visibleWhen: (a) => a.W1 === "Divide among specific people" || a.W1 === "I have a more detailed plan in mind" },
+
+        { id: "W3", type: "radio", required: true, label: "If a child inherits while young, how would you like the money handled?",
+          options: ["Hold in trust and release at certain ages", "Hold in trust until a single age", "Let the trustee decide based on need", "Not sure, please advise"],
+          tooltip: "Many families release funds in stages, for example part at 25 and the rest at 30.",
+          visibleWhen: (a, f) => f.isMinor },
+        { id: "W4", type: "text", label: "What ages feel right to you?", help: "For example, 25 and 30.",
+          visibleWhen: (a, f) => f.isMinor && a.W3 === "Hold in trust and release at certain ages" },
+
+        { id: "W5", type: "radio", required: true, label: "Are there specific gifts you want to leave?", options: ["Yes", "No"],
+          help: "A particular item, a dollar amount, or a gift to charity." },
+        { id: "W5a", type: "textarea", label: "Describe each gift and who receives it", visibleWhen: (a) => a.W5 === "Yes" },
+        { id: "W6", type: "radio", required: true, label: "Do you want to leave anything to charity?", options: ["Yes", "No"] },
+        { id: "W6a", type: "text", label: "Which organizations, and roughly how much or what share?", visibleWhen: (a) => a.W6 === "Yes" },
+
+        { id: "W7", type: "textarea", required: true, label: "If something happened to you and everyone you have named, where should your estate go?",
+          help: "For example, to other relatives, to charity, or split among named people.",
+          tooltip: "This is the safety net. It rarely comes into play, but every good plan includes it." },
+
+        { id: "W8", type: "radio", required: true, label: "Do you have pets you want cared for?", options: ["Yes", "No"] },
+        { id: "W8a", type: "text", label: "Who would care for them, and would you like to set aside money for their care?",
+          visibleWhen: (a) => a.W8 === "Yes" },
+
+        { id: "W9", type: "radio", required: true, label: "Do you want to intentionally leave someone out who might otherwise expect to inherit?",
+          options: ["Yes", "No", "Let's discuss"], help: "This is your right. We just want to handle it carefully." },
+      ],
+    },
+
+    /* ---------- SECTION 8: HEALTH CARE (conditional on AHCD) ---------- */
+    {
+      id: "S8",
+      title: "Health Care and End of Life",
+      visibleWhen: (a, f) => f.hasAHCD,
+      items: [
+        { id: "H1", type: "radio", required: true, label: "If you were near the end of life with no reasonable chance of recovery, what is your general wish?",
+          options: ["Focus on comfort, avoid treatments that only prolong things", "Try all available treatments", "I want my health care agent to decide", "Not sure, please advise"],
+          tooltip: "You can change this anytime. This simply records your general view." },
+        { id: "H2", type: "radio", required: true, label: "Organ and tissue donation",
+          options: ["Yes, I wish to donate", "No", "Let my agent decide"] },
+        { id: "H3", type: "radio", required: true, label: "Do you have a preference for burial, cremation, or another arrangement?",
+          options: ["Burial", "Cremation", "Other", "No preference"] },
+        { id: "H3a", type: "text", label: "Please describe", visibleWhen: (a) => a.H3 === "Other" },
+        { id: "H4", type: "radio", label: "Do you have religious or cultural wishes we should know about?", options: ["Yes", "No"] },
+        { id: "H4a", type: "textarea", label: "Tell us", visibleWhen: (a) => a.H4 === "Yes" },
+      ],
+    },
+
+    /* ---------- SECTION 9: SPECIAL CIRCUMSTANCES ---------- */
+    {
+      id: "S9",
+      title: "Special Circumstances",
+      intro: "A catch-all that triggers attorney review. Each Yes raises a flag in your summary.",
+      items: [
+        { id: "S1", type: "radio", label: "Do you expect to receive a significant inheritance or gift?", options: ["Yes", "No"] },
+        { id: "S2", type: "radio", label: "Do you own property in another state or country?", options: ["Yes", "No"] },
+        { id: "S3", type: "radio", label: "Is there family tension we should be aware of in your planning?",
+          options: ["Yes", "No", "Prefer to discuss live"] },
+        { id: "S4", type: "radio", label: "Do you own firearms that need special handling?", options: ["Yes", "No"],
+          tooltip: "Certain firearms have transfer rules. A specialized trust can help." },
+        { id: "S5", type: "radio", label: "Is there anything else unusual about your situation?", options: ["Yes", "No"] },
+        { id: "S5a", type: "textarea", label: "Tell us", visibleWhen: (a) => a.S5 === "Yes" },
+      ],
+    },
+
+    /* ---------- SECTION 10: ADVISORS / EXISTING DOCS ---------- */
+    {
+      id: "S10",
+      title: "Your Advisors and Existing Documents",
+      items: [
+        { id: "E1", type: "radio", required: true, label: "Do you work with a financial advisor, CPA, or insurance agent you would like us to coordinate with?",
+          options: ["Yes", "No"] },
+        { id: "E1a", type: "textarea", label: "Name, role, and best contact",
+          help: "Only if you want us to coordinate. We will not contact anyone without your okay.",
+          visibleWhen: (a) => a.E1 === "Yes" },
+        { id: "E2", type: "radio", required: true, label: "Do you have copies of any existing estate documents to share?",
+          options: ["Yes, I will upload or bring them", "No", "Not sure"] },
+        { note: "If you have existing documents, please bring copies to your meeting. (Secure online upload is not available in this version.)" },
+      ],
+    },
+
+    /* ---------- SECTION 11: GOALS ---------- */
+    {
+      id: "S11",
+      title: "Goals and Questions",
+      items: [
+        { id: "G1", type: "textarea", required: true, label: "In your own words, what do you most want your estate plan to accomplish?",
+          help: "There are no wrong answers." },
+        { id: "G2", type: "textarea", label: "What worries you most, if anything?" },
+        { id: "G3", type: "textarea", label: "Any questions you want to make sure we cover?" },
+      ],
+    },
+
+    /* ---------- SECTION 12: REVIEW / ATTEST / SUBMIT ---------- */
+    {
+      id: "S12",
+      title: "Review and Submit",
+      review: true,
+      items: [
+        { id: "Z1", type: "checkbox", required: true, label: "The information I have provided is accurate to the best of my knowledge." },
+        { id: "Z2", type: "text", required: true, label: "Type your full name to sign",
+          help: "This serves as your electronic signature for this questionnaire." },
+      ],
+    },
+  ];
+}
+
+/* ============================================================
+   CHILDREN REPEATER
+   ============================================================ */
+function ChildrenRepeater({ children, setChildren }) {
+  const add = () => setChildren([...children, {}]);
+  const remove = (i) => setChildren(children.filter((_, idx) => idx !== i));
+  const update = (i, key, val) => {
+    const next = children.map((c, idx) => (idx === i ? { ...c, [key]: val } : c));
+    setChildren(next);
+  };
+  return (
+    <div className="mb-6">
+      <p className="font-semibold text-slate-800 mb-2">Your children</p>
+      {children.length === 0 && <p className="text-sm text-slate-500 mb-2">No children added yet.</p>}
+      <div className="space-y-4">
+        {children.map((c, i) => {
+          const age = ageFromDOB(c.F11b);
+          const minor = age !== null && age < 18;
+          return (
+            <div key={i} className="rounded-lg border border-slate-200 p-4 bg-slate-50">
+              <div className="flex items-center justify-between mb-3">
+                <p className="font-medium text-slate-700">
+                  Child {i + 1}{age !== null && <span className="ml-2 text-sm text-slate-500">(age {age}{minor ? ", minor" : ""})</span>}
+                </p>
+                <button type="button" onClick={() => remove(i)} className="text-sm text-red-600 underline">Remove</button>
+              </div>
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Child full name *</label>
+                  <input type="text" value={c.F11a ?? ""} onChange={(e) => update(i, "F11a", e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Child date of birth *</label>
+                  <input type="date" value={c.F11b ?? ""} onChange={(e) => update(i, "F11b", e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">This child is from *
+                    <InfoIcon text="This helps us make sure each child is provided for the way you intend." /></label>
+                  <div className="space-y-1">
+                    {["This relationship", "A prior relationship", "Adopted", "Stepchild"].map((o) => (
+                      <label key={o} className="flex items-center gap-2 text-sm">
+                        <input type="radio" name={"F11c_" + i} checked={c.F11c === o} onChange={() => update(i, "F11c", o)} />
+                        {o}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">
+                    Does this child have any special needs or a disability that affects their ability to manage money or care for themselves? *
+                    <InfoIcon text="If yes, a special needs trust may protect government benefits. We will flag this." /></label>
+                  <div className="flex gap-4">
+                    {["Yes", "No"].map((o) => (
+                      <label key={o} className="flex items-center gap-2 text-sm">
+                        <input type="radio" name={"F11d_" + i} checked={c.F11d === o} onChange={() => update(i, "F11d", o)} />
+                        {o}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <button type="button" onClick={add} className="mt-3 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700">
+        + Add a child
+      </button>
+    </div>
+  );
+}
+
+/* ============================================================
+   PROPERTY REPEATER
+   ============================================================ */
+function PropertyRepeater({ title, list, setList }) {
+  const add = () => setList([...list, {}]);
+  const remove = (i) => setList(list.filter((_, idx) => idx !== i));
+  const update = (i, key, val) => setList(list.map((p, idx) => (idx === i ? { ...p, [key]: val } : p)));
+  return (
+    <div className="mb-6">
+      <p className="font-semibold text-slate-800 mb-2">{title}</p>
+      {list.length === 0 && <p className="text-sm text-slate-500 mb-2">None added yet.</p>}
+      <div className="space-y-4">
+        {list.map((p, i) => (
+          <div key={i} className="rounded-lg border border-slate-200 p-4 bg-slate-50">
+            <div className="flex items-center justify-between mb-3">
+              <p className="font-medium text-slate-700">Property {i + 1}</p>
+              <button type="button" onClick={() => remove(i)} className="text-sm text-red-600 underline">Remove</button>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">Property address</label>
+                <input type="text" value={p.address ?? ""} onChange={(e) => update(i, "address", e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2" />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">How is the title held?
+                  <InfoIcon text="How a property is titled affects how it passes. We can check the deed for you." /></label>
+                <select value={p.title ?? ""} onChange={(e) => update(i, "title", e.target.value)}
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2">
+                  <option value="">-- Please choose --</option>
+                  {["In my name", "Joint with spouse", "Joint with someone else", "In a trust", "Not sure"].map((o) => <option key={o}>{o}</option>)}
+                </select>
+              </div>
+              <div className="grid sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Estimated value</label>
+                  <input type="number" value={p.value ?? ""} onChange={(e) => update(i, "value", e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2" placeholder="Your best estimate" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Approx. mortgage balance</label>
+                  <input type="number" value={p.mortgage ?? ""} onChange={(e) => update(i, "mortgage", e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2" placeholder="Enter 0 if paid off" />
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <button type="button" onClick={add} className="mt-3 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700">
+        + Add a property
+      </button>
+    </div>
+  );
+}
+
+/* ============================================================
+   FIDUCIARY ROLE BLOCK (first choice + alternate)
+   ============================================================ */
+function FiduciaryRole({ item, data, setData, error }) {
+  const d = data || { first: {}, alt: {} };
+  const update = (which, obj) => setData({ ...d, [which]: obj });
+  return (
+    <div className="mb-6">
+      <p className="font-semibold text-slate-800 mb-1">
+        {item.label}{item.required && item.required({}, {}) ? "" : ""}<InfoIcon text={item.tooltip} />
+      </p>
+      {item.help && <p className="text-sm text-slate-500 mb-3">{item.help}</p>}
+      {error && <p className="text-sm text-red-600 mb-2 font-medium">{error}</p>}
+      <div className="space-y-3">
+        <PersonBlock title="First choice" data={d.first} onChange={(o) => update("first", o)} />
+        <PersonBlock title="Alternate (backup)" data={d.alt} onChange={(o) => update("alt", o)} />
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   VALIDATION FOR A SECTION
+   ============================================================ */
+function validateSection(section, state, flags) {
+  const errors = {};
+  const a = state.answers;
+
+  for (const item of section.items) {
+    // Repeaters
+    if (item.repeater) {
+      if (!isItemVisible(item, a, flags, state)) continue;
+      if (item.repeater === "children" && a.F10 === "Yes") {
+        if (!state.children || state.children.length === 0) {
+          errors["children"] = "Please add at least one child, or change your answer above.";
+        } else {
+          const bad = state.children.some((c) => !c.F11a || !c.F11b || !c.F11c || !c.F11d);
+          if (bad) errors["children"] = "Please complete name, date of birth, relationship, and special-needs answer for each child.";
+        }
+      }
+      continue;
+    }
+    // Fiduciary roles
+    if (item.fiduciary) {
+      if (!isItemVisible(item, a, flags, state)) continue;
+      const req = item.required ? item.required(a, flags) : false;
+      if (req) {
+        const fd = state.fiduciaries[item.fiduciary];
+        if (!fd || !fd.first || !fd.first.fullName || !String(fd.first.fullName).trim()) {
+          errors[item.fiduciary] = "Please name at least a first choice for this role.";
+        }
+      }
+      continue;
+    }
+    if (item.subhead || item.note) continue;
+    if (!isItemVisible(item, a, flags, state)) continue;
+    if (item.type === "sensitive") continue; // optional
+
+    const val = a[item.id];
+    if (item.required) {
+      const empty = item.type === "multicheckbox"
+        ? !(Array.isArray(val) && val.length > 0)
+        : item.type === "checkbox"
+          ? !val
+          : val === undefined || val === null || String(val).trim() === "";
+      if (empty) {
+        errors[item.id] = "This field is required.";
+        continue;
+      }
+    }
+    if (val && item.type === "email" && !emailValid(val)) errors[item.id] = "Please enter a valid email address.";
+    if (val && item.type === "tel" && !phoneValid(val)) errors[item.id] = "Please enter a valid phone number (at least 10 digits).";
+  }
+  return errors;
+}
+
+function isItemVisible(item, a, flags, state) {
+  if (!item.visibleWhen) return true;
+  try { return !!item.visibleWhen(a, flags, state); } catch (e) { return true; }
+}
+
+/* ============================================================
+   ATTORNEY SUMMARY RENDERER
+   ============================================================ */
+function labelFor(sections, id) {
+  for (const s of sections) for (const it of s.items) if (it.id === id) return it.label;
+  return id;
+}
+
+function AttorneySummary({ sections, state, flags, onBack }) {
+  const a = state.answers;
+  const reviewFlags = buildAttorneyFlags(state, flags);
+
+  const renderValue = (item) => {
+    const v = a[item.id];
+    if (item.type === "multicheckbox") {
+      const opts = typeof item.options === "function" ? item.options(state, flags) : item.options;
+      const arr = Array.isArray(v) ? v : [];
+      return arr.map((val) => (opts.find((o) => o.value === val) || {}).label || val).join(", ");
+    }
+    return v;
+  };
+
+  return (
+    <div className="max-w-3xl mx-auto p-4 sm:p-8">
+      <div className="no-print flex flex-wrap gap-3 mb-6">
+        <button onClick={() => window.print()} className="px-4 py-2 rounded-lg bg-blue-600 text-white font-medium hover:bg-blue-700">
+          Print or save as PDF
+        </button>
+        <button onClick={onBack} className="px-4 py-2 rounded-lg bg-slate-200 text-slate-800 font-medium hover:bg-slate-300">
+          Back to form
+        </button>
+      </div>
+
+      <div className="print-area bg-white rounded-xl shadow p-6 sm:p-8">
+        <h1 className="text-2xl font-bold text-slate-900">Estate Planning Intake — Attorney Summary</h1>
+        <p className="text-sm text-slate-500 mt-1">
+          Client: {a.C1 || "—"} · Submitted: {state.submittedAt ? new Date(state.submittedAt).toLocaleString() : "—"} · Ref: {state.resumeCode}
+        </p>
+
+        {/* FLAGS */}
+        <div className="mt-6 border-2 border-amber-400 bg-amber-50 rounded-lg p-4">
+          <h2 className="text-lg font-bold text-amber-900">⚑ Flags for Attorney Review</h2>
+          {reviewFlags.length === 0 ? (
+            <p className="text-amber-800 mt-1">No special flags raised.</p>
+          ) : (
+            <ul className="list-disc ml-6 mt-2 space-y-1 text-amber-900">
+              {reviewFlags.map((f, i) => <li key={i}>{f}</li>)}
+            </ul>
+          )}
+        </div>
+
+        {/* SECTIONS */}
+        {sections.map((s) => {
+          if (s.gate || s.review) return null;
+          if (s.visibleWhen && !s.visibleWhen(a, flags, state)) return null;
+
+          const rows = [];
+          for (const item of s.items) {
+            if (item.subhead) { rows.push(<h3 key={"sub" + item.subhead} className="font-semibold text-slate-600 mt-4">{item.subhead}</h3>); continue; }
+            if (item.note) continue;
+
+            if (item.repeater) {
+              if (!isItemVisible(item, a, flags, state)) continue;
+              if (item.repeater === "children" && state.children.length) {
+                rows.push(
+                  <div key="children" className="py-2">
+                    <p className="font-medium text-slate-700">Children</p>
+                    <ul className="ml-4 mt-1 text-slate-800 space-y-1">
+                      {state.children.map((c, i) => {
+                        const age = ageFromDOB(c.F11b);
+                        return <li key={i}>• {c.F11a} — DOB {c.F11b} (age {age}{age !== null && age < 18 ? ", minor" : ""}), {c.F11c}{c.F11d === "Yes" ? ", special needs" : ""}</li>;
+                      })}
+                    </ul>
+                  </div>
+                );
+              }
+              if ((item.repeater === "homeProperties" || item.repeater === "otherProperties")) {
+                const list = state[item.repeater] || [];
+                if (list.length) {
+                  rows.push(
+                    <div key={item.repeater} className="py-2">
+                      <p className="font-medium text-slate-700">{item.repeater === "homeProperties" ? "Home / residence" : "Other real estate"}</p>
+                      <ul className="ml-4 mt-1 text-slate-800 space-y-1">
+                        {list.map((p, i) => <li key={i}>• {p.address || "(address not given)"} — {p.title || "title unknown"}, est. ${p.value || "?"}, mortgage ${p.mortgage || "0"}</li>)}
+                      </ul>
+                    </div>
+                  );
+                }
+              }
+              continue;
+            }
+
+            if (item.fiduciary) {
+              if (!isItemVisible(item, a, flags, state)) continue;
+              const fd = state.fiduciaries[item.fiduciary];
+              const fmt = (x) => x && x.fullName ? `${x.fullName}${x.relationship ? " (" + x.relationship + ")" : ""}${x.phone ? ", " + x.phone : ""}${x.city ? ", " + x.city : ""}` : null;
+              const first = fd && fmt(fd.first);
+              const alt = fd && fmt(fd.alt);
+              if (first || alt) {
+                rows.push(
+                  <div key={item.fiduciary} className="py-2">
+                    <p className="font-medium text-slate-700">{item.label}</p>
+                    {first && <p className="ml-4 text-slate-800">1st: {first}</p>}
+                    {alt && <p className="ml-4 text-slate-800">Alt: {alt}</p>}
+                  </div>
+                );
+              }
+              continue;
+            }
+
+            if (item.type === "sensitive") {
+              if (a[item.id]) rows.push(<SummaryRow key={item.id} label={item.label} value="(provided — stored securely / on device)" />);
+              continue;
+            }
+
+            if (!isItemVisible(item, a, flags, state)) continue;
+            const v = renderValue(item);
+            const isEmpty = v === undefined || v === null || (typeof v === "string" && v.trim() === "") || (Array.isArray(v) && v.length === 0);
+            if (isEmpty) {
+              if (item.required) rows.push(<SummaryRow key={item.id} label={item.label} value="—" />);
+              continue;
+            }
+            rows.push(<SummaryRow key={item.id} label={item.label} value={v} />);
+          }
+
+          if (rows.filter((r) => r.type !== "h3").length === 0 && !rows.some((r) => r)) return null;
+
+          return (
+            <section key={s.id} className="mt-6">
+              <h2 className="text-lg font-bold text-slate-900 border-b border-slate-200 pb-1">{s.title}</h2>
+              <div className="mt-2">{rows}</div>
+            </section>
+          );
+        })}
+
+        <div className="mt-8 pt-4 border-t border-slate-200 text-sm text-slate-600">
+          <p>Signed electronically by: <span className="font-semibold">{a.Z2 || "—"}</span></p>
+          <p>Attestation accuracy confirmed: {a.Z1 ? "Yes" : "No"}</p>
+          <p>Timestamp: {state.submittedAt ? new Date(state.submittedAt).toLocaleString() : "—"}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SummaryRow({ label, value }) {
+  return (
+    <div className="grid sm:grid-cols-3 gap-1 py-1 border-b border-slate-100">
+      <div className="text-slate-500 text-sm sm:col-span-1">{label}</div>
+      <div className="text-slate-900 sm:col-span-2 whitespace-pre-wrap">{String(value)}</div>
+    </div>
+  );
+}
+
+/* ============================================================
+   MAIN APP
+   ============================================================ */
+function App() {
+  const sections = useMemo(() => buildSections(), []);
+  const [state, setState] = useState(() => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) return { ...makeDefaultState(), ...JSON.parse(raw) };
+    } catch (e) {}
+    return makeDefaultState();
+  });
+  const [stepIndex, setStepIndex] = useState(0);
+  const [errors, setErrors] = useState({});
+  const [submitted, setSubmitted] = useState(() => !!state.submittedAt);
+  const [savedNote, setSavedNote] = useState(false);
+  const fileInputRef = useRef(null);
+  const topRef = useRef(null);
+
+  const flags = useMemo(() => deriveFlags(state), [state]);
+
+  // Visible sections (Section 8 conditional)
+  const visibleSections = useMemo(
+    () => sections.filter((s) => !s.visibleWhen || s.visibleWhen(state.answers, flags, state)),
+    [sections, state, flags]
+  );
+  const totalSteps = visibleSections.length;
+  const clampedIndex = Math.min(stepIndex, totalSteps - 1);
+  const section = visibleSections[clampedIndex];
+
+  // Persist on every change
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      localStorage.setItem(CODE_PREFIX + state.resumeCode, JSON.stringify(state));
+      setSavedNote(true);
+      const t = setTimeout(() => setSavedNote(false), 1200);
+      return () => clearTimeout(t);
+    } catch (e) {}
+  }, [state]);
+
+  // Auto pre-check guardian doc when minor children appear
+  useEffect(() => {
+    if (flags.isMinor) {
+      setState((s) => {
+        const d = s.answers.D1 || [];
+        if (!d.includes("guardian")) return { ...s, answers: { ...s.answers, D1: [...d, "guardian"] } };
+        return s;
+      });
+    }
+  }, [flags.isMinor]);
+
+  const setAnswer = useCallback((id, val) => {
+    setState((s) => ({ ...s, answers: { ...s.answers, [id]: val } }));
+    setErrors((e) => { const n = { ...e }; delete n[id]; return n; });
+  }, []);
+
+  const scrollTop = () => { if (topRef.current) topRef.current.scrollIntoView({ behavior: "smooth", block: "start" }); window.scrollTo(0, 0); };
+
+  const goNext = () => {
+    const errs = validateSection(section, state, flags);
+    if (Object.keys(errs).length > 0) { setErrors(errs); scrollTop(); return; }
+    setErrors({});
+    if (clampedIndex < totalSteps - 1) { setStepIndex(clampedIndex + 1); scrollTop(); }
+  };
+  const goBack = () => { setErrors({}); if (clampedIndex > 0) { setStepIndex(clampedIndex - 1); scrollTop(); } };
+  const goToSection = (sid) => {
+    const idx = visibleSections.findIndex((s) => s.id === sid);
+    if (idx >= 0) { setStepIndex(idx); setSubmitted(false); scrollTop(); }
+  };
+
+  const doSubmit = () => {
+    const errs = validateSection(section, state, flags);
+    if (Object.keys(errs).length > 0) { setErrors(errs); scrollTop(); return; }
+    const stamped = { ...state, submittedAt: new Date().toISOString() };
+    setState(stamped);
+    setSubmitted(true);
+    scrollTop();
+  };
+
+  /* ---- Save / Resume helpers ---- */
+  const downloadJSON = () => {
+    const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `estate-intake-${state.resumeCode}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+  const importJSON = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        setState({ ...makeDefaultState(), ...data });
+        setStepIndex(0);
+        setSubmitted(!!data.submittedAt);
+        alert("Progress loaded successfully.");
+      } catch (err) { alert("Sorry, that file could not be read."); }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  };
+  const resumeByCode = () => {
+    const code = (prompt("Enter your resume code (e.g. EP-4F7K):") || "").trim().toUpperCase();
+    if (!code) return;
+    const raw = localStorage.getItem(CODE_PREFIX + code);
+    if (raw) { setState({ ...makeDefaultState(), ...JSON.parse(raw) }); setStepIndex(0); alert("Progress restored from this device."); }
+    else alert("No saved progress found for that code on this device. Use 'Import file' if you saved a JSON file.");
+  };
+  const startOver = () => {
+    if (confirm("This will erase your answers on this device and start fresh. Continue?")) {
+      const fresh = makeDefaultState();
+      setState(fresh); setStepIndex(0); setSubmitted(false);
+    }
+  };
+
+  /* ---- Render attorney summary view ---- */
+  if (submitted) {
+    return (
+      <div ref={topRef}>
+        <header className="bg-green-700 text-white p-4 no-print">
+          <div className="max-w-3xl mx-auto flex flex-wrap items-center justify-between gap-3">
+            <p className="font-medium">✓ Thank you — your questionnaire has been completed. The firm will be in touch.</p>
+            <button onClick={downloadJSON} className="px-3 py-1.5 rounded bg-white/20 hover:bg-white/30 text-sm">Download JSON</button>
+          </div>
+        </header>
+        <AttorneySummary sections={sections} state={state} flags={flags} onBack={() => setSubmitted(false)} />
+      </div>
+    );
+  }
+
+  /* ---- Render form ---- */
+  const progressPct = Math.round(((clampedIndex + 1) / totalSteps) * 100);
+
+  return (
+    <div ref={topRef} className="min-h-screen">
+      {/* Top bar */}
+      <header className="bg-slate-800 text-white">
+        <div className="max-w-3xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-2">
+          <h1 className="text-lg font-semibold">Estate Planning Intake</h1>
+          <div className="flex items-center gap-2 text-xs">
+            <span className="text-slate-300">{savedNote ? "Saved ✓" : "Progress saved on this device"}</span>
+          </div>
+        </div>
+        {/* Progress bar */}
+        <div className="h-2 bg-slate-700">
+          <div className="h-2 bg-blue-500 transition-all" style={{ width: progressPct + "%" }} />
+        </div>
+      </header>
+
+      <main className="max-w-3xl mx-auto px-4 py-6">
+        {/* Save / resume toolbar */}
+        <div className="no-print flex flex-wrap items-center gap-2 mb-4 text-sm">
+          <span className="text-slate-500">Step {clampedIndex + 1} of {totalSteps} · {section.title}</span>
+          <span className="flex-1" />
+          <button onClick={downloadJSON} className="px-3 py-1.5 rounded bg-slate-200 hover:bg-slate-300">Save file</button>
+          <button onClick={() => fileInputRef.current && fileInputRef.current.click()} className="px-3 py-1.5 rounded bg-slate-200 hover:bg-slate-300">Import file</button>
+          <button onClick={resumeByCode} className="px-3 py-1.5 rounded bg-slate-200 hover:bg-slate-300">Resume by code</button>
+          <button onClick={startOver} className="px-3 py-1.5 rounded bg-slate-100 text-slate-500 hover:bg-slate-200">Start over</button>
+          <input ref={fileInputRef} type="file" accept="application/json,.json" onChange={importJSON} className="hidden" />
+        </div>
+
+        <div className="bg-white rounded-xl shadow p-5 sm:p-8">
+          <SectionView
+            section={section}
+            state={state}
+            flags={flags}
+            errors={errors}
+            sections={sections}
+            setAnswer={setAnswer}
+            setState={setState}
+            goToSection={goToSection}
+          />
+
+          {/* Nav buttons */}
+          {!section.review && (
+            <div className="flex items-center justify-between mt-8 pt-4 border-t border-slate-100">
+              <button onClick={goBack} disabled={clampedIndex === 0}
+                className="px-5 py-2.5 rounded-lg bg-slate-200 text-slate-800 font-medium disabled:opacity-40 hover:bg-slate-300">
+                ← Back
+              </button>
+              <button onClick={goNext}
+                className="px-6 py-2.5 rounded-lg bg-blue-600 text-white font-medium hover:bg-blue-700">
+                Next →
+              </button>
+            </div>
+          )}
+          {section.review && (
+            <div className="flex items-center justify-between mt-8 pt-4 border-t border-slate-100">
+              <button onClick={goBack} className="px-5 py-2.5 rounded-lg bg-slate-200 text-slate-800 font-medium hover:bg-slate-300">← Back</button>
+              <button onClick={doSubmit} className="px-6 py-2.5 rounded-lg bg-green-600 text-white font-medium hover:bg-green-700">Submit questionnaire</button>
+            </div>
+          )}
+        </div>
+
+        <p className="text-xs text-slate-400 mt-4 text-center no-print">
+          Your progress is saved on this device. To move between devices, use “Save file” and “Import file.” Resume code: <span className="font-mono">{state.resumeCode}</span>
+        </p>
+      </main>
+    </div>
+  );
+}
+
+/* ============================================================
+   SECTION VIEW (renders one section)
+   ============================================================ */
+function SectionView({ section, state, flags, errors, sections, setAnswer, setState, goToSection }) {
+  const a = state.answers;
+
+  // Gate screen (Section 0)
+  if (section.gate) {
+    return (
+      <div>
+        <h2 className="text-2xl font-bold text-slate-900 mb-4">Welcome</h2>
+        <p className="text-slate-700 mb-4">
+          Thank you for taking the time to complete this questionnaire. Your answers help us prepare your estate plan
+          efficiently and accurately. Please answer as completely as you can. If you are not sure about something, give
+          your best answer or leave a note. You can save your progress and return later.
+        </p>
+        <div className="space-y-3 mb-6">
+          {[
+            ["No attorney-client relationship yet.", "Completing this form does not create an attorney-client relationship. A relationship begins only when a written engagement agreement is signed by you and the firm."],
+            ["Confidentiality.", "Information you share here is treated as confidential. Please do not list anyone you would not want us to contact as part of a conflict check."],
+            ["Accuracy.", "The documents we prepare rely on what you tell us. Please review your answers for accuracy before submitting."],
+            ["Not legal advice.", "This questionnaire collects information. It does not provide legal advice or recommend any particular plan."],
+          ].map(([t, d], i) => (
+            <div key={i} className="border-l-4 border-blue-400 bg-blue-50 p-3 rounded-r-lg">
+              <p className="font-semibold text-slate-800">{t}</p>
+              <p className="text-sm text-slate-600">{d}</p>
+            </div>
+          ))}
+        </div>
+        <Field item={section.items[0]} value={a.Z0} onChange={setAnswer} error={errors.Z0} />
+      </div>
+    );
+  }
+
+  // Review section (Section 12)
+  if (section.review) {
+    return (
+      <div>
+        <h2 className="text-2xl font-bold text-slate-900 mb-2">Review and Submit</h2>
+        <p className="text-slate-600 mb-4">Please review your answers below. Use the edit links to jump back to any section.</p>
+        <ReviewList sections={sections} state={state} flags={flags} goToSection={goToSection} />
+        <div className="mt-6 space-y-2">
+          {section.items.map((it) => (
+            <Field key={it.id} item={it} value={a[it.id]} onChange={setAnswer} error={errors[it.id]} />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <h2 className="text-2xl font-bold text-slate-900 mb-1">{section.title}</h2>
+      {section.intro && <p className="text-slate-600 mb-5">{section.intro}</p>}
+
+      {section.items.map((item, idx) => {
+        if (item.subhead) {
+          return <h3 key={"sub" + idx} className="text-lg font-semibold text-slate-700 mt-6 mb-2 border-b border-slate-100 pb-1">{item.subhead}</h3>;
+        }
+        if (item.note) {
+          return <p key={"note" + idx} className="text-sm text-slate-500 bg-slate-50 border border-slate-200 rounded p-3 mb-4">{item.note}</p>;
+        }
+        if (item.repeater) {
+          if (!isItemVisible(item, a, flags, state)) return null;
+          if (item.repeater === "children") {
+            return <div key="children">
+              <ChildrenRepeater children={state.children} setChildren={(c) => setState((s) => ({ ...s, children: c }))} />
+              {errors.children && <p className="text-sm text-red-600 mb-4 font-medium">{errors.children}</p>}
+            </div>;
+          }
+          if (item.repeater === "homeProperties") {
+            return <PropertyRepeater key="hp" title="Your home" list={state.homeProperties} setList={(l) => setState((s) => ({ ...s, homeProperties: l }))} />;
+          }
+          if (item.repeater === "otherProperties") {
+            return <PropertyRepeater key="op" title="Other real estate" list={state.otherProperties} setList={(l) => setState((s) => ({ ...s, otherProperties: l }))} />;
+          }
+        }
+        if (item.fiduciary) {
+          if (!isItemVisible(item, a, flags, state)) return null;
+          return <FiduciaryRole key={item.fiduciary} item={item}
+            data={state.fiduciaries[item.fiduciary]}
+            setData={(d) => setState((s) => ({ ...s, fiduciaries: { ...s.fiduciaries, [item.fiduciary]: d } }))}
+            error={errors[item.fiduciary]} />;
+        }
+        if (!isItemVisible(item, a, flags, state)) return null;
+        if (item.type === "sensitive") {
+          return <SensitiveField key={item.id} item={item} value={a[item.id]} onChange={setAnswer} />;
+        }
+        // Provide resolved options for function-based options
+        const resolvedItem = typeof item.options === "function"
+          ? { ...item, options: () => item.options(state, flags) }
+          : item;
+        return <Field key={item.id} item={resolvedItem} value={a[item.id]} onChange={setAnswer} error={errors[item.id]} />;
+      })}
+    </div>
+  );
+}
+
+/* ============================================================
+   REVIEW LIST (compact, with edit links) for Section 12
+   ============================================================ */
+function ReviewList({ sections, state, flags, goToSection }) {
+  const a = state.answers;
+  const reviewFlags = buildAttorneyFlags(state, flags);
+  return (
+    <div className="space-y-4">
+      {reviewFlags.length > 0 && (
+        <div className="border-2 border-amber-400 bg-amber-50 rounded-lg p-4">
+          <p className="font-bold text-amber-900">⚑ Items we will review with you</p>
+          <ul className="list-disc ml-6 mt-1 text-sm text-amber-900 space-y-0.5">
+            {reviewFlags.map((f, i) => <li key={i}>{f}</li>)}
+          </ul>
+        </div>
+      )}
+      {sections.map((s) => {
+        if (s.gate || s.review) return null;
+        if (s.visibleWhen && !s.visibleWhen(a, flags, state)) return null;
+        return (
+          <div key={s.id} className="border border-slate-200 rounded-lg p-3">
+            <div className="flex items-center justify-between">
+              <p className="font-semibold text-slate-800">{s.title}</p>
+              <button onClick={() => goToSection(s.id)} className="text-sm text-blue-600 underline">Edit</button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ============================================================
+   MOUNT
+   ============================================================ */
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
