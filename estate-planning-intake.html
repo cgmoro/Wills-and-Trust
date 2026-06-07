@@ -235,18 +235,24 @@ function buildSummaryText(sections, state, flags) {
 
 function InfoIcon({ text }) {
   const [open, setOpen] = useState(false);
+  const timer = useRef(null);
+  // Clear any pending close timer on unmount.
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
   if (!text) return null;
+  const show = () => { if (timer.current) { clearTimeout(timer.current); timer.current = null; } setOpen(true); };
+  // Small delay so moving from the icon toward the bubble doesn't dismiss it.
+  const hideSoon = () => { if (timer.current) clearTimeout(timer.current); timer.current = setTimeout(() => setOpen(false), 300); };
   return (
     <span className="relative inline-block align-middle ml-1">
       <button
         type="button"
         aria-label="More information"
         aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
-        onMouseEnter={() => setOpen(true)}
-        onMouseLeave={() => setOpen(false)}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setOpen(false)}
+        onClick={() => (open ? setOpen(false) : show())}
+        onMouseEnter={show}
+        onMouseLeave={hideSoon}
+        onFocus={show}
+        onBlur={hideSoon}
         className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-brand-mint text-brand-dark text-xs font-bold hover:bg-brand-green focus:outline-none"
       >
         i
@@ -254,9 +260,13 @@ function InfoIcon({ text }) {
       {open && (
         <span
           role="tooltip"
-          className="absolute z-20 left-1/2 -translate-x-1/2 mt-2 w-64 p-3 text-sm font-normal text-white bg-brand-dark rounded-lg shadow-lg"
+          onMouseEnter={show}
+          onMouseLeave={hideSoon}
+          className="absolute z-20 left-1/2 -translate-x-1/2 pt-2 w-64"
         >
-          {text}
+          <span className="block p-3 text-sm font-normal text-white bg-brand-dark rounded-lg shadow-lg">
+            {text}
+          </span>
         </span>
       )}
     </span>
